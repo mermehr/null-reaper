@@ -134,7 +134,8 @@ def check_smb_null_session(target_ip):
 
 def query_ldap_info(target_ip):
     """
-    Checks for anonymous LDAP bind and queries for domain info and active users.
+    Checks for anonymous LDAP bind and queries for domain info, active users,
+    and potential Kerberoasting targets (users with SPNs).
     """
     print_info("Checking for anonymous LDAP bind (port 389)...")
     server = Server(target_ip, get_info=ALL_ATTRIBUTES)
@@ -188,7 +189,7 @@ def query_ldap_info(target_ip):
                     else:
                         print(f"  - {Style.CYAN}{attr_formatted}:{Style.RESET} {value}")
 
-            # Filter for active, non-system user accounts.
+            # --- 1. Filter for active, non-system user accounts ---
             print_info("Querying for active, non-system user accounts...")
             real_users_filter = f'(& (objectClass=person) (!(objectClass=computer)) (!(userAccountControl:1.2.840.113556.1.4.803:={UF_ACCOUNTDISABLE})) (!(sAMAccountName=HealthMailbox*)) )'
 
@@ -208,6 +209,30 @@ def query_ldap_info(target_ip):
                         print(f"{Style.YELLOW}{username:<25}{Style.RESET} Description: {desc}")
             else:
                 print("  No active users found with this filter.")
+
+            # --- 2. Filter for SPN Targets (Kerberoasting) ---
+            print_info("Querying for users with Service Principal Names (SPNs)...")
+            # We use sAMAccountName=krbtgt because krbtgt is a user, not an objectClass
+            spn_filter = '(&(objectClass=user)(servicePrincipalName=*)(!(sAMAccountName=krbtgt)))'
+
+            conn.search(search_base=domain_dn,
+                        search_filter=spn_filter,
+                        search_scope=SUBTREE,
+                        attributes=['sAMAccountName', 'servicePrincipalName'],
+                        size_limit=0)
+
+            if conn.entries:
+                print_vulnerable("Found users with SPNs (Potential Kerberoast Targets):")
+                for entry in conn.entries:
+                    username = entry.sAMAccountName.value
+                    # SPNs are usually a list, we just grab the first one for display
+                    spns = entry.servicePrincipalName.value
+                    spn_display = spns[0] if isinstance(spns, list) else spns
+                    
+                    print(f"  > {Style.RED}{username:<25}{Style.RESET} SPN: {spn_display}...")
+            else:
+                print_secure("No users with SPNs found via anonymous LDAP.")
+
             return domain_dn, user_list
 
         except Exception as e:
