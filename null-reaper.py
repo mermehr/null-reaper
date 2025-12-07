@@ -25,6 +25,12 @@ from ldap3.core.exceptions import LDAPInvalidCredentialsResult
 from impacket.smbconnection import SMBConnection, SessionError
 from impacket.nmb import NetBIOSError
 from impacket.smb3 import FILE_ATTRIBUTE_DIRECTORY
+import datetime
+import random
+from impacket.krb5.asn1 import AS_REQ, KERB_PA_PAC_REQUEST, AS_REP, seq_set
+from impacket.krb5.kerberosv5 import sendReceive, getKerberosTGT
+from impacket.krb5 import types
+from pyasn1.codec.der import decoder, encoder
 
 # Windows error codes for session status.
 STATUS_LOGON_FAILURE = 0xC000006D
@@ -178,7 +184,7 @@ def query_ldap_info(target_ip):
                 return None, []
 
             for attr in domain_attrs:
-                if attr == 'defaultNamingContext': continue # Already printed
+                if attr == 'defaultNamingContext': continue # Already printed  # noqa: E701
                 if attr in domain_info:
                     value = domain_info[attr].value
                     attr_formatted = ' '.join(word.capitalize() for word in attr.replace('Functionality', ' Func Level').split())
@@ -232,6 +238,28 @@ def query_ldap_info(target_ip):
                     print(f"  > {Style.RED}{username:<25}{Style.RESET} SPN: {spn_display}...")
             else:
                 print_secure("No users with SPNs found via anonymous LDAP.")
+
+            # --- 3. Filter for High-Value Servers (DCs, Exchange, etc) ---
+            print_info("Querying for high-value Server objects...")
+            
+            # Find computers running a "Server" OS (filters out workstations)
+            server_filter = '(&(objectClass=computer)(operatingSystem=*Server*))'
+
+            conn.search(search_base=domain_dn,
+                        search_filter=server_filter,
+                        search_scope=SUBTREE,
+                        attributes=['sAMAccountName', 'operatingSystem', 'dNSHostName'],
+                        size_limit=0)
+
+            if conn.entries:
+                print_success("Found Server Objects:")
+                for entry in conn.entries:
+                    name = entry.sAMAccountName.value
+                    os = entry.operatingSystem.value or 'N/A'
+                    dns = entry.dNSHostName.value or 'N/A'
+                    print(f"  > {Style.CYAN}{name:<20}{Style.RESET} OS: {os} ({dns})")
+            else:
+                print_info("No Server objects found via anonymous LDAP.")
 
             return domain_dn, user_list
 
